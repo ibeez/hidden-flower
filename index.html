@@ -1,0 +1,1442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The Hidden Flower, Fig. 05</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&display=swap">
+<style>
+  :root {
+    --paper: #fbf5e6;
+    --label: rgb(72, 84, 92); /* Blue Grey B47 */
+    --hand: "Gaegu", "Comic Sans MS", "Chalkboard SE", cursive;
+    color-scheme: light;
+  }
+  html, body { background: var(--paper); color: var(--label); }
+  body {
+    margin: 0;
+    min-height: 100%;
+    font-family: var(--hand);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-block: 24px 40px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    gap: 14px;
+  }
+  canvas {
+    width: min(100%, 760px);
+    aspect-ratio: 1200 / 1000;
+    max-width: 100%;
+    display: block;
+    touch-action: none;
+    cursor: grab;
+  }
+  canvas:active {
+    cursor: grabbing;
+  }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  .controls button {
+    font: 700 18px/1 var(--hand);
+    color: var(--label);
+    background: transparent;
+    border: 1.5px solid var(--label);
+    border-radius: 10px;
+    padding: 8px 14px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .controls button:hover {
+    background: rgba(72, 84, 92, 0.08);
+  }
+  .controls button:focus-visible { outline: 2px solid #0846a9; outline-offset: 2px; }
+  .sr {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap;
+  }
+  .sr:focus { position: static; width: auto; height: auto; clip: auto; }
+</style>
+</head>
+<body>
+
+<canvas id="plate" width="1200" height="1000" role="img"
+  aria-label="Fig. 05. Four square Talavera tiles drawn in chunky marker-coloured pixels. Each has a terracotta flower in the middle and a quarter of a second flower in every corner: a red quarter circle and cobalt drops. The tiles slide together one at a time, and where four corners meet, a whole new red and cobalt flower appears that no single tile has."></canvas>
+
+<div class="controls">
+  <button class="sr" id="btn-restart" type="button">Start over</button>
+  <button class="sr" id="btn-pause" type="button">Pause</button>
+  <button class="sr" id="btn-record" type="button">Record one loop</button>
+</div>
+<div class="sr" aria-live="polite" id="live"></div>
+
+<script src="palette.js"></script>
+<script>
+const M = window.MARKERS || {};
+
+const PAPER = "#fbf5e6";
+const LABEL = M["Blue Grey B47"];
+const FONT = '"Gaegu", "Comic Sans MS", "Chalkboard SE", cursive';
+
+const cv = document.getElementById("plate");
+const g = cv.getContext("2d");
+const S = 1200, H = 1000;
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+cv.width = S * DPR; cv.height = H * DPR;
+g.scale(DPR, DPR);
+
+const LOOP = 14.4;
+const ATOM_TIME = 1.1;
+const BEAT = 2.5;
+const BREATHE_OMEGA = (2 * Math.PI * 3) / LOOP;
+const WOBBLE_OMEGA = (2 * Math.PI * 6) / LOOP;
+
+const motionQuery = matchMedia("(prefers-reduced-motion: reduce)");
+
+function beat(t) {
+  const u = ((t % BEAT) + BEAT) % BEAT;
+  const bump = (c, w) => {
+    const dd = Math.min(Math.abs(u - c), BEAT - Math.abs(u - c));
+    return Math.exp(-((dd / w) ** 2));
+  };
+  return bump(0.15, 0.09) + 0.6 * bump(0.45, 0.09);
+}
+
+const popScale = u => {
+  const c = 1.8;
+  u = Math.min(1, Math.max(0, u));
+  return 1 + (c + 1) * (u - 1) ** 3 + c * (u - 1) ** 2;
+};
+
+function easeOutCubic(x) {
+  const c = 1 - Math.min(1, Math.max(0, x));
+  return 1 - c * c * c;
+}
+
+function easeSnap(u) {
+  const c = 1 - Math.min(1, Math.max(0, u));
+  return 1 - c * c * c * c;
+}
+
+// Paper grain as one seamless tile
+const TILE = 420;
+const paper = (() => {
+  const c = document.createElement("canvas");
+  c.width = TILE; c.height = TILE;
+  const p = c.getContext("2d");
+  p.fillStyle = PAPER;
+  p.fillRect(0, 0, TILE, TILE);
+  const img = p.getImageData(0, 0, TILE, TILE), d = img.data;
+  let seed = 42;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const blot = [];
+  for (let i = 0; i < 6; i++) blot.push([rnd() * TILE, rnd() * TILE, 60 + rnd() * 110, rnd() < 0.5 ? -1 : 1]);
+  for (let y = 0; y < TILE; y++) {
+    for (let x = 0; x < TILE; x++) {
+      let n = (rnd() - 0.5) * 11;
+      for (const [bx, by, br, s] of blot) {
+        let dx = Math.abs(x - bx), dy = Math.abs(y - by);
+        dx = Math.min(dx, TILE - dx); dy = Math.min(dy, TILE - dy);
+        const q = (dx * dx + dy * dy) / (br * br);
+        if (q < 1) n += s * 4 * (1 - q);
+      }
+      const idx = (x + y * TILE) * 4;
+      d[idx] += n; d[idx + 1] += n; d[idx + 2] += n * 1.1;
+    }
+  }
+  p.putImageData(img, 0, 0);
+  p.lineCap = "round";
+  for (let i = 0; i < 220; i++) {
+    const x = rnd() * TILE, y = rnd() * TILE, a = rnd() * Math.PI, l = 4 + rnd() * 12;
+    const mx = (rnd() - 0.5) * 3, my = (rnd() - 0.5) * 3;
+    p.strokeStyle = rnd() < 0.6 ? "rgba(120,100,70,0.09)" : "rgba(255,255,255,0.45)";
+    p.lineWidth = 0.6 + rnd() * 0.7;
+    for (const ox of [-TILE, 0, TILE]) for (const oy of [-TILE, 0, TILE]) {
+      p.beginPath();
+      p.moveTo(x + ox, y + oy);
+      p.quadraticCurveTo(x + ox + Math.cos(a) * l * 0.5 + mx, y + oy + Math.sin(a) * l * 0.5 + my, x + ox + Math.cos(a) * l, y + oy + Math.sin(a) * l);
+      p.stroke();
+    }
+  }
+  return c;
+})();
+document.documentElement.style.background = `${PAPER} url(${paper.toDataURL()}) repeat`;
+document.body.style.background = "transparent";
+const paperPattern = g.createPattern(paper, "repeat");
+
+// Geometry helpers
+function pointInPoly(x, y, poly) {
+  let inside = false;
+  const n = poly.length;
+  let p1x = poly[0][0], p1y = poly[0][1];
+  for (let i = 1; i <= n; i++) {
+    const p2 = poly[i % n];
+    const p2x = p2[0], p2y = p2[1];
+    if (y > Math.min(p1y, p2y)) {
+      if (y <= Math.max(p1y, p2y)) {
+        if (x <= Math.max(p1x, p2x)) {
+          let xinters = p1x;
+          if (p1y !== p2y) {
+            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x;
+          }
+          if (p1x === p2x || x <= xinters) {
+            inside = !inside;
+          }
+        }
+      }
+    }
+    p1x = p2x; p1y = p2y;
+  }
+  return inside;
+}
+
+function getTangents(P, C, r) {
+  const dx = P[0] - C[0];
+  const dy = P[1] - C[1];
+  const d = Math.hypot(dx, dy);
+  const base = Math.atan2(dy, dx);
+  const a = Math.acos(r / d);
+  const t1 = [C[0] + r * Math.cos(base + a), C[1] + r * Math.sin(base + a)];
+  const t2 = [C[0] + r * Math.cos(base - a), C[1] + r * Math.sin(base - a)];
+  return [t1, t2];
+}
+
+// Petal Up construction
+const B_PT = [0, 170];
+const CL = [-58, 360];
+const CR = [58, 360];
+const R_PETAL = 72;
+
+const [t1L, t2L] = getTangents(B_PT, CL, R_PETAL);
+const TL = t1L[0] < t2L[0] ? t1L : t2L;
+
+const [t1R, t2R] = getTangents(B_PT, CR, R_PETAL);
+const TR = t1R[0] > t2R[0] ? t1R : t2R;
+
+const petalPoly = [B_PT, TL, CL, CR, TR];
+
+function inPetalUp(u, v) {
+  if (Math.hypot(u - CL[0], v - CL[1]) < R_PETAL) return true;
+  if (Math.hypot(u - CR[0], v - CR[1]) < R_PETAL) return true;
+  return pointInPoly(u, v, petalPoly);
+}
+
+function inAnyPetal(u, v) {
+  if (inPetalUp(u, v)) return true;
+  if (inPetalUp(v, -u)) return true;
+  if (inPetalUp(-u, -v)) return true;
+  if (inPetalUp(-v, u)) return true;
+  return false;
+}
+
+// Corners & Drops
+const CORNERS = [
+  { k: [500, 500], inward: 225 * Math.PI / 180, id: 0 },
+  { k: [-500, 500], inward: 315 * Math.PI / 180, id: 1 },
+  { k: [-500, -500], inward: 45 * Math.PI / 180, id: 2 },
+  { k: [500, -500], inward: 135 * Math.PI / 180, id: 3 },
+];
+
+const DROPS = [];
+for (const corner of CORNERS) {
+  const [kx, ky] = corner.k;
+  for (const da of [0, 30 * Math.PI / 180, -30 * Math.PI / 180]) {
+    const ang = corner.inward + da;
+    const dir = [Math.cos(ang), Math.sin(ang)];
+    const C = [kx + 235 * dir[0], ky + 235 * dir[1]];
+    const T = [kx + 125 * dir[0], ky + 125 * dir[1]];
+    const [tp1, tp2] = getTangents(T, C, 55);
+    DROPS.push({ C, r: 55, poly: [T, tp1, C, tp2], cornerId: corner.id });
+  }
+}
+
+function inCornerCentre(u, v) {
+  for (const corner of CORNERS) {
+    if (Math.hypot(u - corner.k[0], v - corner.k[1]) < 115) {
+      return corner.id;
+    }
+  }
+  return -1;
+}
+
+function inDrop(u, v) {
+  for (const drop of DROPS) {
+    if (Math.hypot(u - drop.C[0], v - drop.C[1]) < drop.r) {
+      return drop.cornerId;
+    }
+    if (pointInPoly(u, v, drop.poly)) {
+      return drop.cornerId;
+    }
+  }
+  return -1;
+}
+
+function mulberry32(seed) {
+  return function() {
+    let t = (seed += 0x6D2B79F5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const HOME_SPOTS = [
+  { x: 234, y: 224 }, // Tile 1, top-left
+  { x: 602, y: 224 }, // Tile 2, top-right
+  { x: 602, y: 592 }, // Tile 3, bottom-right
+  { x: 234, y: 592 }, // Tile 4, bottom-left
+];
+
+const TILES_CELLS = [];
+for (let tileIdx = 0; tileIdx < 4; tileIdx++) {
+  const cells = [];
+  const rng = mulberry32(tileIdx * 10007 + 42);
+  for (let j = 0; j < 26; j++) {
+    const v = 500 - (j + 0.5) * (1000 / 26);
+    for (let i = 0; i < 26; i++) {
+      const u = -500 + (i + 0.5) * (1000 / 26);
+      const d0 = Math.hypot(u, v);
+      let priority = 6;
+      let cornerId = -1;
+      let color = "";
+
+      if (d0 < 90) {
+        priority = 1;
+        color = M["POSCA Indigo"];
+      } else if (d0 < 180) {
+        priority = 2;
+        color = M["Light Cantaloupe 275"];
+      } else if (inAnyPetal(u, v)) {
+        priority = 3;
+        color = M["Sand 107"];
+      } else {
+        const cc = inCornerCentre(u, v);
+        if (cc >= 0) {
+          priority = 4;
+          cornerId = cc;
+          color = M["POSCA Tomato Red"];
+        } else {
+          const cd = inDrop(u, v);
+          if (cd >= 0) {
+            priority = 5;
+            cornerId = cd;
+            color = M["POSCA Indigo"];
+          } else {
+            priority = 6;
+            const isWhite = rng() < 0.08;
+            color = isWhite ? M["Skin White 131"] : M["Biscotti 117"];
+          }
+        }
+      }
+
+      const sz = 11.5 + rng() * 1.5;
+      const dx = (rng() - 0.5) * 1.6;
+      const dy = (rng() - 0.5) * 1.6;
+      const rot = (rng() - 0.5) * 0.08;
+      const ph = rng() * 2 * Math.PI;
+
+      // Tile 0: bottom-right (id 3) touches meeting point (600, 590)
+      // Tile 1: bottom-left (id 2) touches meeting point
+      // Tile 2: top-left (id 1) touches meeting point
+      // Tile 3: top-right (id 0) touches meeting point
+      const meetingCornerId = [3, 2, 1, 0][tileIdx];
+      const isMeetingQuarter = (priority === 4 || priority === 5) && cornerId === meetingCornerId;
+
+      cells.push({
+        i, j, u, v, priority, cornerId, color,
+        sz, dx, dy, rot, ph,
+        isMeetingQuarter
+      });
+    }
+  }
+  TILES_CELLS.push(cells);
+}
+
+// Ripples manager
+const activeRipples = [];
+
+function addRipple(x, y, duration = 1.3, speed = 460, amplitude = 0.4, color = M["POSCA Tomato Red"], drawRing = false) {
+  activeRipples.push({
+    x,
+    y,
+    startTime: performance.now(),
+    duration: duration * 1000,
+    speed,
+    amplitude,
+    color,
+    drawRing
+  });
+}
+
+// Directional slam waves (for Hands mode)
+const activeSlamWaves = [];
+
+function addSlamWave(tileIdx, axis, dir, startMs = performance.now(), duration = 340) {
+  activeSlamWaves.push({ tileIdx, axis, dir, startMs, duration });
+}
+
+function drawTile(tileIndex, x, y, alpha = 1, scale = 1, t = 0, pulseT = -1, isStill = false, nowMs = 0) {
+  if (alpha <= 0) return;
+  const cells = TILES_CELLS[tileIndex];
+  g.save();
+  g.translate(x + 182, y + 182);
+  const [scx, scy] = Array.isArray(scale) ? scale : [scale, scale];
+  if (scx !== 1 || scy !== 1) {
+    g.scale(scx, scy);
+  }
+  g.translate(-182, -182);
+
+  const pulseActive = pulseT >= 0 && pulseT <= 1.6;
+  const waveRadius = pulseActive ? 280 * (pulseT / 1.6) : 0;
+
+  for (let cIdx = 0; cIdx < cells.length; cIdx++) {
+    const cell = cells[cIdx];
+    const cx = (cell.i + 0.5) * 14;
+    const cy = (cell.j + 0.5) * 14;
+    const screenX = x + cx;
+    const screenY = y + cy;
+
+    let pScale = 1;
+    let shiftX = 0;
+    let shiftY = 0;
+    let cellAlpha = 1;
+
+    // 1. Meeting quarter pulse (t = 6.0 to 7.6, pulseT >= 0 && pulseT <= 1.6)
+    if (pulseActive && cell.isMeetingQuarter && !isStill) {
+      const d = Math.hypot(screenX - 600, screenY - 590);
+      pScale += 0.38 * Math.exp(-Math.pow((d - waveRadius) / 40, 2)) * (1 - pulseT / 1.6);
+    }
+
+    // 2. Directional Slam Ripples (Timeline mode)
+    if (!inHandsMode && !isStill) {
+      // Tile 2 slammed into Tile 1 horizontally (right to left)
+      if (tileIndex === 0 && t >= 2.05 && t < 2.50) {
+        const dt = t - 2.05;
+        const colPos = (25 - cell.i) / 25; // 0 at right, 1 at left
+        const front = dt / 0.32;
+        const diff = colPos - front;
+        const bump = Math.exp(-(diff * diff) / (0.10 * 0.10));
+        const fade = Math.max(0, 1 - dt / 0.45);
+        pScale += 0.8 * bump * fade;
+        shiftX -= 7.0 * bump * fade;
+      }
+
+      // Tile 3 slammed into Tile 2 vertically (bottom to top)
+      if (tileIndex === 1 && t >= 3.95 && t < 4.40) {
+        const dt = t - 3.95;
+        const rowPos = (25 - cell.j) / 25; // 0 at bottom, 1 at top
+        const front = dt / 0.32;
+        const diff = rowPos - front;
+        const bump = Math.exp(-(diff * diff) / (0.10 * 0.10));
+        const fade = Math.max(0, 1 - dt / 0.45);
+        pScale += 0.8 * bump * fade;
+        shiftY -= 7.0 * bump * fade;
+      }
+
+      // Tile 4 slammed into Tile 3 horizontally (left to right) & Tile 1 vertically (bottom to top)
+      if (tileIndex === 2 && t >= 5.85 && t < 6.30) { // Tile 3
+        const dt = t - 5.85;
+        const colPos = cell.i / 25; // 0 at left, 1 at right
+        const front = dt / 0.32;
+        const diff = colPos - front;
+        const bump = Math.exp(-(diff * diff) / (0.10 * 0.10));
+        const fade = Math.max(0, 1 - dt / 0.45);
+        pScale += 0.8 * bump * fade;
+        shiftX += 7.0 * bump * fade;
+      }
+      if (tileIndex === 0 && t >= 5.85 && t < 6.30) { // Tile 1
+        const dt = t - 5.85;
+        const rowPos = (25 - cell.j) / 25; // 0 at bottom, 1 at top
+        const front = dt / 0.32;
+        const diff = rowPos - front;
+        const bump = Math.exp(-(diff * diff) / (0.10 * 0.10));
+        const fade = Math.max(0, 1 - dt / 0.45);
+        pScale += 0.8 * bump * fade;
+        shiftY -= 7.0 * bump * fade;
+      }
+    }
+
+    // 3. Hands mode directional slam ripples
+    if (inHandsMode && !isStill && activeSlamWaves.length > 0) {
+      for (let wIdx = 0; wIdx < activeSlamWaves.length; wIdx++) {
+        const w = activeSlamWaves[wIdx];
+        if (w.tileIdx !== tileIndex) continue;
+        const elapsed = (nowMs - w.startMs) / 1000;
+        const durS = w.duration / 1000;
+        if (elapsed < 0 || elapsed > durS + 0.15) continue;
+        const pos = (w.axis === "x" ? (w.dir > 0 ? cell.i : 25 - cell.i) : (w.dir > 0 ? cell.j : 25 - cell.j)) / 25;
+        const front = elapsed / durS;
+        const diff = pos - front;
+        const bump = Math.exp(-(diff * diff) / (0.10 * 0.10));
+        const fade = Math.max(0, 1 - elapsed / (durS + 0.15));
+        pScale += 0.8 * bump * fade;
+        if (w.axis === "x") shiftX += w.dir * 7.0 * bump * fade;
+        else shiftY += w.dir * 7.0 * bump * fade;
+      }
+    }
+
+    // 5. Dynamic ripples from user clicks / interactions
+    if (!isStill && activeRipples.length > 0) {
+      for (let rIdx = 0; rIdx < activeRipples.length; rIdx++) {
+        const rip = activeRipples[rIdx];
+        const dt = (nowMs - rip.startTime) / 1000;
+        if (dt <= 0) continue;
+        const rad = rip.speed * dt;
+        const prog = (nowMs - rip.startTime) / rip.duration;
+        if (prog >= 1) continue;
+        const fade = 1 - prog;
+        const dist = Math.hypot(screenX - rip.x, screenY - rip.y);
+        const diff = dist - rad;
+        pScale += rip.amplitude * Math.exp(-(diff * diff) / (44 * 44)) * fade;
+      }
+    }
+
+    pScale = Math.min(1.8, pScale);
+
+    let breatheAlpha = 1;
+    let wx = 0, wy = 0;
+    if (!isStill) {
+      const br = 0.5 + 0.5 * Math.sin(t * BREATHE_OMEGA + cell.ph);
+      breatheAlpha = 1.0 - 0.12 * br;
+      wx = 0.8 * Math.sin(t * WOBBLE_OMEGA + cell.ph * 2);
+      wy = 0.8 * Math.cos(t * WOBBLE_OMEGA + cell.ph * 3);
+    }
+
+    const curSz = cell.sz * pScale;
+    if (curSz <= 0.1 || alpha * cellAlpha <= 0.01) continue;
+
+    g.save();
+    g.globalAlpha = alpha * cellAlpha * breatheAlpha;
+    g.translate(cx + cell.dx + wx + shiftX, cy + cell.dy + wy + shiftY);
+    g.rotate(cell.rot);
+    g.fillStyle = cell.color;
+    g.beginPath();
+    g.roundRect(-curSz / 2, -curSz / 2, curSz, curSz, 2 * pScale);
+    g.fill();
+    g.restore();
+  }
+  g.restore();
+}
+
+let paused = false;
+let pauseAt = 0, pausedFor = 0;
+let loopStart = performance.now();
+let recording = false;
+
+// Hands mode state
+let inHandsMode = false;
+let pointerDownTile = null;
+let pointerDownPos = null;
+let dragOffset = { x: 0, y: 0 };
+let hasMoved = false;
+let draggedTile = null;
+
+const handsPositions = HOME_SPOTS.map(h => ({ x: h.x, y: h.y }));
+const tileSnaps = [null, null, null, null];
+let handsPopStart = 0;
+
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.has("t")) {
+  const forcedT = parseFloat(urlParams.get("t"));
+  loopStart = performance.now() - forcedT * 1000;
+  paused = true;
+  pauseAt = performance.now();
+}
+
+const live = document.getElementById("live");
+let lastLive = "";
+
+function replay() {
+  inHandsMode = false;
+  pointerDownTile = null;
+  draggedTile = null;
+  hasMoved = false;
+  for (let i = 0; i < 4; i++) {
+    handsPositions[i] = { x: HOME_SPOTS[i].x, y: HOME_SPOTS[i].y };
+    tileSnaps[i] = null;
+  }
+  activeRipples.length = 0;
+  paused = false;
+  btnPause.textContent = "Pause";
+  pausedFor = 0;
+  pauseAt = 0;
+  loopStart = performance.now();
+}
+
+const btnRestart = document.getElementById("btn-restart");
+btnRestart.onclick = () => {
+  replay();
+};
+
+const btnPause = document.getElementById("btn-pause");
+btnPause.onclick = () => {
+  paused = !paused;
+  if (paused) pauseAt = performance.now() - pausedFor;
+  else pausedFor = performance.now() - pauseAt;
+  btnPause.textContent = paused ? "Play" : "Pause";
+};
+
+const local = typeof location !== "undefined" && (location.protocol === "file:" || ["localhost", "127.0.0.1"].includes(location.hostname));
+const rec = document.getElementById("btn-record");
+rec.hidden = !local || !window.MediaRecorder;
+rec.onclick = () => {
+  const type = ["video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp9", "video/webm"].find(t => MediaRecorder.isTypeSupported(t));
+  const mr = new MediaRecorder(cv.captureStream(30), { mimeType: type, videoBitsPerSecond: 12e6 });
+  const chunks = [];
+  mr.ondataavailable = e => chunks.push(e.data);
+  mr.onstop = () => {
+    recording = false;
+    rec.textContent = "Record one loop";
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob(chunks, { type }));
+    a.download = "hidden-flower." + (type && type.includes("mp4") ? "mp4" : "webm");
+    a.click();
+  };
+  recording = true;
+  paused = false; pausedFor = 0;
+  replay();
+  rec.textContent = "Recording...";
+  mr.start();
+  setTimeout(() => mr.stop(), LOOP * 1000);
+};
+
+// The site plays the four-tile build once, then holds still for playing and clicking.
+// Recordings (and ?loop) run the full loop with the wall.
+const PLAY_ONCE_END = 7.59;
+const fullLoop = urlParams.has("loop") || urlParams.has("t");
+
+function timelineT(nowP) {
+  const elapsed = (nowP - loopStart) / 1000;
+  if (!recording && !fullLoop && elapsed >= PLAY_ONCE_END) return PLAY_ONCE_END;
+  let t = elapsed % LOOP;
+  if (t < 0) t += LOOP;
+  return t;
+}
+
+function getCurrentT() {
+  return timelineT(paused ? pauseAt : performance.now() - pausedFor);
+}
+
+function getTileState(tileIdx, t) {
+  if (tileIdx === 0) {
+    if (t >= WALL_START && t < WALL_END) return { x: HOME_SPOTS[0].x, y: HOME_SPOTS[0].y, alpha: 0, scale: 1 };
+    return { x: HOME_SPOTS[0].x, y: HOME_SPOTS[0].y, alpha: 1, scale: 1 };
+  }
+
+  if (t >= WALL_START) {
+    return { x: HOME_SPOTS[tileIdx].x, y: HOME_SPOTS[tileIdx].y, alpha: 0, scale: 1 };
+  }
+
+  const sl = SLAMS.find(q => q.tile === tileIdx);
+  return sl ? slamState(sl, t) : { x: HOME_SPOTS[tileIdx].x, y: HOME_SPOTS[tileIdx].y, alpha: 1, scale: 1 };
+}
+
+// Slam physics: wind up, accelerate into the old tiles, hit at full speed,
+// then squash, rebound and knock the struck tiles. All driven by t so the loop repeats exactly.
+// dir is the side each tile comes from; seams are where the chips fly out.
+const SLAMS = [
+  { tile: 1, dir: [1, 0], hit: 2.05, struck: [0], shake: 9, seams: [[600, 224, 600, 588]] },
+  { tile: 2, dir: [0, 1], hit: 3.95, struck: [1], shake: 9, seams: [[602, 590, 966, 590]] },
+  { tile: 3, dir: [-1, 0], hit: 5.85, struck: [2], shake: 16, seams: [[600, 592, 600, 956], [234, 590, 598, 590]] },
+];
+const WINDUP = 0.3, TRAVEL = 0.42, PULLBACK = 36, FAR = 420;
+
+const ring = (dt, w, k) => dt < 0 ? 0 : Math.exp(-k * dt) * Math.sin(w * dt);
+
+function slamState(sl, t) {
+  const h = HOME_SPOTS[sl.tile];
+  const [ax, ay] = sl.dir;
+  const t0 = sl.hit - TRAVEL;
+  let off = FAR, alpha = 0, along = 1, perp = 1;
+  if (t >= t0 - WINDUP && t < t0) {
+    // Anticipation: drift back a little while fading in
+    const w = (t - (t0 - WINDUP)) / WINDUP;
+    off = FAR + PULLBACK * easeOutCubic(w);
+    alpha = w;
+  } else if (t >= t0 && t < sl.hit) {
+    // Accelerate (ease-in) so it arrives at top speed, stretched by the speed
+    const u = (t - t0) / TRAVEL;
+    off = (FAR + PULLBACK) * (1 - u * u * u);
+    alpha = 1;
+    along = 1 + 0.08 * u * u;
+    perp = 1 - 0.04 * u * u;
+  } else if (t >= sl.hit) {
+    // Impact: squash flat against the seam, then a damped rebound
+    const dt = t - sl.hit;
+    off = 13 * ring(dt, 26, 8);
+    alpha = 1;
+    const sq = dt < 0.8 ? 0.13 * Math.exp(-10 * dt) * Math.cos(26 * dt) : 0;
+    along = 1 - sq;
+    perp = 1 + 0.6 * sq;
+  }
+  // Keep the leading edge planted while squashing or stretching
+  const pin = -182 * (1 - along);
+  return {
+    x: h.x + ax * (off + pin),
+    y: h.y + ay * (off + pin),
+    alpha,
+    scale: ax ? [along, perp] : [perp, along],
+  };
+}
+
+// Struck tiles get shoved in the direction of travel and spring back
+function knock(tileIdx, t) {
+  let ox = 0, oy = 0, sq = 0;
+  for (const sl of SLAMS) {
+    if (!sl.struck.includes(tileIdx) || t < sl.hit || t > sl.hit + 1) continue;
+    const dt = t - sl.hit;
+    const push = (sl.shake * 1.1) * ring(dt, 24, 6.5);
+    ox -= sl.dir[0] * push;
+    oy -= sl.dir[1] * push;
+    sq += 0.06 * ring(dt + 0.06, 24, 7);
+  }
+  return { ox, oy, sq };
+}
+
+// The wall: zoom out, rings of tiles slam in around the 2x2, every corner
+// lights up as a flower, then the wall scatters and one tile zooms home.
+const WALL_START = 7.6, WALL_END = 13.7;
+const RING_HITS = [null, 8.55, 9.65];
+const FLOWER_PULSE = 9.9, SCATTER = 10.8, SCATTER_SPEED = 460;
+const RING_FAR = 700;
+const CX = 600, CY = 590;
+
+const easeInOut = u => {
+  u = Math.min(1, Math.max(0, u));
+  return u < 0.5 ? 4 * u * u * u : 1 - (-2 * u + 2) ** 3 / 2;
+};
+
+function wallZoom(t) {
+  const span = (a, b, z0, z1) => z0 + (z1 - z0) * easeInOut((t - a) / (b - a));
+  if (t < 7.7) return 1;
+  if (t < 9.05) return span(7.7, 8.3, 1, 0.5);
+  if (t < 13.05) return span(9.05, 9.45, 0.5, 0.34);
+  return span(13.05, WALL_END, 0.34, 1);
+}
+
+const WALL = [];
+for (let gj = -3; gj <= 2; gj++) {
+  for (let gi = -3; gi <= 2; gi++) {
+    const ring = Math.max(gi >= 0 ? gi : -gi - 1, gj >= 0 ? gj : -gj - 1);
+    const px = ((gi % 2) + 2) % 2, py = ((gj % 2) + 2) % 2;
+    const pat = py ? (px ? 0 : 1) : (px ? 3 : 2);
+    const wx = 234 + (gi + 1) * 368, wy = 224 + (gj + 1) * 368;
+    const vx = wx + 182 - CX, vy = wy + 182 - CY, vl = Math.hypot(vx, vy);
+    WALL.push({ ring, pat, wx, wy, dir: [vx / vl, vy / vl], survivor: gi === -1 && gj === -1 });
+  }
+}
+
+function wallTileOffset(tile, t) {
+  let off = 0, alpha = 1;
+  const hit = RING_HITS[tile.ring];
+  if (hit) {
+    const t0 = hit - TRAVEL;
+    if (t < t0 - 0.25) return null;
+    if (t < t0) {
+      const w = (t - (t0 - 0.25)) / 0.25;
+      off = RING_FAR + 60 * easeOutCubic(w);
+      alpha = w;
+    } else if (t < hit) {
+      const u = (t - t0) / TRAVEL;
+      off = (RING_FAR + 60) * (1 - u * u * u);
+    } else {
+      off = 10 * ring(t - hit, 26, 8);
+    }
+  }
+  // Inner tiles get shoved inward when an outer ring lands
+  for (let r = tile.ring + 1; r < RING_HITS.length; r++) {
+    off -= 9 * ring(t - RING_HITS[r], 24, 6.5);
+  }
+  return { ox: tile.dir[0] * off, oy: tile.dir[1] * off, alpha };
+}
+
+function wallShake(t) {
+  let x = 0, y = 0;
+  RING_HITS.forEach((h, r) => {
+    if (!h) return;
+    const dt = t - h;
+    if (dt < 0 || dt > 0.7) return;
+    const e = (10 + 6 * r) * Math.exp(-9 * dt);
+    x += e * Math.sin(57 * dt);
+    y += e * 0.7 * Math.sin(71 * dt + 1);
+  });
+  return [x, y];
+}
+
+function drawWall(t, nowMs, shx, shy) {
+  const z = wallZoom(t);
+  const breatheT = t * BREATHE_OMEGA, wobT = t * WOBBLE_OMEGA;
+  for (const tile of WALL) {
+    const st = wallTileOffset(tile, t);
+    if (!st) continue;
+    for (const cell of TILES_CELLS[tile.pat]) {
+      const wx = tile.wx + st.ox + (cell.i + 0.5) * 14 + cell.dx + 0.8 * Math.sin(wobT + cell.ph * 2);
+      const wy = tile.wy + st.oy + (cell.j + 0.5) * 14 + cell.dy + 0.8 * Math.cos(wobT + cell.ph * 3);
+      let sx = CX + z * (wx - CX), sy = CY + z * (wy - CY);
+      const d = Math.hypot(sx - CX, sy - CY);
+      let pScale = 1, a = st.alpha * (1 - 0.12 * (0.5 + 0.5 * Math.sin(breatheT + cell.ph)));
+      let spin = 0;
+
+      // Each ring landing sends a squeeze wave inward
+      RING_HITS.forEach((h, r) => {
+        if (!h) return;
+        const dt = t - h;
+        if (dt < 0 || dt > 0.5) return;
+        const front = (r + 1) * 368 * z * 1.2 * (1 - dt / 0.4);
+        pScale += 0.6 * Math.exp(-(((d - front) / 40) ** 2)) * (1 - dt / 0.5);
+      });
+
+      // Every corner of the wall lights up as a flower
+      if (t >= FLOWER_PULSE && t < SCATTER && (cell.priority === 4 || cell.priority === 5)) {
+        const front = 520 * (t - FLOWER_PULSE);
+        pScale += 0.5 * Math.exp(-(((d - front) / 50) ** 2));
+      }
+
+      // Scatter from the centre; one tile stays behind
+      if (t >= SCATTER && !tile.survivor) {
+        const dtWave = t - (SCATTER + d / SCATTER_SPEED);
+        if (dtWave >= -0.15 && dtWave < 0) {
+          pScale += 0.45 * Math.exp(-((dtWave / 0.08) ** 2));
+        } else if (dtWave >= 0) {
+          const atomU = Math.min(1, dtWave / ATOM_TIME);
+          if (atomU >= 1) continue;
+          const atomFade = 1 - atomU;
+          pScale *= 0.35 + 0.65 * atomFade;
+          a *= Math.min(1, 1.6 * atomFade);
+          const ang = Math.atan2(sy - CY, sx - CX) + cell.dx * 0.5;
+          const speed = 170 + 260 * ((cell.ph / (2 * Math.PI) * 7.31) % 1);
+          const travel = speed * (1 - Math.exp(-1.6 * dtWave)) / 1.6;
+          sx += Math.cos(ang) * travel;
+          sy += Math.sin(ang) * travel + 60 * dtWave * dtWave;
+          spin = cell.dy * 6 * dtWave;
+        }
+      }
+
+      for (const rip of activeRipples) {
+        const dt = (nowMs - rip.startTime) / 1000;
+        const prog = (nowMs - rip.startTime) / rip.duration;
+        if (dt <= 0 || prog >= 1) continue;
+        const diff = Math.hypot(sx - rip.x, sy - rip.y) - rip.speed * dt;
+        pScale += rip.amplitude * Math.exp(-(diff * diff) / (44 * 44)) * (1 - prog);
+      }
+
+      const sz = cell.sz * Math.min(1.8, pScale) * z;
+      if (sz < 0.3 || a <= 0.01) continue;
+      const r = cell.rot + spin, c = Math.cos(r) * DPR, sn = Math.sin(r) * DPR;
+      g.setTransform(c, sn, -sn, c, DPR * (sx + shx), DPR * (sy + shy));
+      g.globalAlpha = a;
+      g.fillStyle = cell.color;
+      g.beginPath();
+      if (sz > 8) g.roundRect(-sz / 2, -sz / 2, sz, sz, 2 * z);
+      else g.rect(-sz / 2, -sz / 2, sz, sz);
+      g.fill();
+    }
+  }
+  g.globalAlpha = 1;
+  g.setTransform(DPR, 0, 0, DPR, DPR * shx, DPR * shy);
+}
+
+// Whole plate shake, mostly along the hit axis
+function shake(t) {
+  let x = 0, y = 0;
+  for (const sl of SLAMS) {
+    const dt = t - sl.hit;
+    if (dt < 0 || dt > 0.7) continue;
+    const e = sl.shake * Math.exp(-9 * dt);
+    const a = Math.sin(57 * dt), b = 0.35 * Math.sin(83 * dt + 1);
+    x += e * (sl.dir[0] * a + sl.dir[1] * b);
+    y += e * (sl.dir[1] * a + sl.dir[0] * b);
+  }
+  return [x, y];
+}
+
+// Marker-pixel chips knocked loose at the seam, seeded so every loop is identical
+const CHIP_COLORS = ["POSCA Tomato Red", "POSCA Indigo", "Biscotti 117", "Sand 107", "Light Cantaloupe 275"];
+function drawChips(t) {
+  SLAMS.forEach((sl, idx) => {
+    const dt = t - sl.hit;
+    if (dt < 0 || dt > 1) return;
+    const rng = mulberry32(idx * 977 + 13);
+    const n = sl.shake > 10 ? 40 : 26;
+    for (let k = 0; k < n; k++) {
+      const seam = sl.seams[Math.floor(rng() * sl.seams.length)];
+      const s = rng();
+      const px = seam[0] + (seam[2] - seam[0]) * s;
+      const py = seam[1] + (seam[3] - seam[1]) * s;
+      const ang = rng() * 2 * Math.PI;
+      const speed = 160 + rng() * 520;
+      const life = 0.4 + rng() * 0.45;
+      const size = 5 + rng() * 6;
+      const spin = (rng() - 0.5) * 18;
+      const color = M[CHIP_COLORS[Math.floor(rng() * CHIP_COLORS.length)]];
+      if (dt > life) continue;
+      const vx = Math.cos(ang) * speed - sl.dir[0] * 140;
+      const vy = Math.sin(ang) * speed - sl.dir[1] * 140 - 220;
+      const f = 1 - dt / life;
+      g.save();
+      g.globalAlpha = f;
+      g.translate(px + vx * dt, py + vy * dt + 700 * dt * dt);
+      g.rotate(spin * dt);
+      g.fillStyle = color;
+      g.beginPath();
+      g.roundRect(-size / 2, -size / 2, size, size, 2);
+      g.fill();
+      g.restore();
+    }
+  });
+}
+
+
+// Header
+let headerBox = null;
+
+function hitHeader(px, py) {
+  if (!headerBox) return false;
+  return px >= headerBox.x && px <= headerBox.x + headerBox.w &&
+         py >= headerBox.y && py <= headerBox.y + headerBox.h;
+}
+
+function drawHeader(t, isStill, litAlphas, showUnderline) {
+  g.textBaseline = "alphabetic";
+  g.textAlign = "left";
+  g.font = `400 24px ${FONT}`;
+  g.globalAlpha = 0.7;
+  g.fillStyle = LABEL;
+  g.fillText("Fig. 05", 44, 62);
+  g.globalAlpha = 1;
+
+  const Y_BASE = 96;
+  const Y_MID = 72;
+
+  g.font = `700 40px ${FONT}`;
+  const w1_small = g.measureText("1").width;
+  const w4_small = g.measureText("4").width;
+  const fracW = Math.max(w1_small, w4_small) + 10;
+
+  g.font = `700 66px ${FONT}`;
+  const wPlus = g.measureText("+").width;
+  const wEq = g.measureText("=").width;
+  const w1_big = g.measureText("1").width;
+
+  const GAP = 26;
+
+  const terms = [
+    { type: "frac", id: 0, w: fracW },
+    { type: "op", char: "+", w: wPlus },
+    { type: "frac", id: 1, w: fracW },
+    { type: "op", char: "+", w: wPlus },
+    { type: "frac", id: 2, w: fracW },
+    { type: "op", char: "+", w: wPlus },
+    { type: "frac", id: 3, w: fracW },
+    { type: "op", char: "=", w: wEq },
+    { type: "one", id: 4, w: w1_big },
+  ];
+
+  let totalW = 0;
+  for (let i = 0; i < terms.length; i++) {
+    totalW += terms[i].w;
+    if (i < terms.length - 1) totalW += GAP;
+  }
+
+  const startX = (S - totalW) / 2;
+  headerBox = { x: startX - 16, y: Y_BASE - 70, w: totalW + 32, h: 84 };
+
+  let curX = startX;
+  for (let i = 0; i < terms.length; i++) {
+    const term = terms[i];
+    const centerX = curX + term.w / 2;
+
+    if (term.type === "op") {
+      g.save();
+      g.font = `700 66px ${FONT}`;
+      g.textAlign = "center";
+      g.textBaseline = "alphabetic";
+      g.fillStyle = LABEL;
+      g.globalAlpha = 0.6;
+      g.fillText(term.char, centerX, Y_BASE);
+      g.restore();
+    } else {
+      const litIdx = term.type === "frac" ? term.id : 4;
+      const litAlpha = litAlphas[litIdx];
+      const a = beat(t - (centerX - startX) * 0.0008);
+      const s = isStill ? 1 : 1 + 0.035 * a * litAlpha;
+
+      g.save();
+      g.translate(centerX, Y_MID);
+      g.scale(s, s);
+
+      if (term.type === "frac") {
+        const drawFracContent = (color, alpha) => {
+          if (alpha <= 0) return;
+          g.save();
+          g.globalAlpha = alpha;
+          g.fillStyle = color;
+          g.strokeStyle = color;
+          g.lineWidth = 3;
+          g.lineCap = "round";
+
+          const barHalf = (term.w - 4) / 2;
+          g.beginPath();
+          g.moveTo(-barHalf, 0);
+          g.lineTo(barHalf, 0);
+          g.stroke();
+
+          g.font = `700 40px ${FONT}`;
+          g.textAlign = "center";
+          g.textBaseline = "alphabetic";
+          g.fillText("1", 0, -5);
+
+          g.textBaseline = "top";
+          g.fillText("4", 0, 5);
+
+          g.restore();
+        };
+
+        drawFracContent(M["Blush 136"], 1);
+        drawFracContent(M["POSCA Tomato Red"], litAlpha);
+      } else if (term.type === "one") {
+        const drawOneContent = (color, alpha) => {
+          if (alpha <= 0) return;
+          g.save();
+          g.globalAlpha = alpha;
+          g.fillStyle = color;
+          g.font = `700 66px ${FONT}`;
+          g.textAlign = "center";
+          g.textBaseline = "alphabetic";
+          g.fillText("1", 0, Y_BASE - Y_MID);
+          g.restore();
+        };
+
+        drawOneContent(M["Blush 136"], 1);
+        drawOneContent(M["POSCA Tomato Red"], litAlpha);
+      }
+
+      g.restore();
+    }
+
+    curX += term.w + GAP;
+  }
+
+  if (showUnderline) {
+    g.save();
+    g.strokeStyle = M["POSCA Tomato Red"];
+    g.lineWidth = 3;
+    g.lineCap = "round";
+    g.beginPath();
+    g.moveTo(startX, Y_BASE + 14);
+    g.quadraticCurveTo(startX + totalW / 2, Y_BASE + 19, startX + totalW, Y_BASE + 12);
+    g.stroke();
+    g.restore();
+  }
+}
+
+function toCanvas(e) {
+  const b = cv.getBoundingClientRect();
+  return [(e.clientX - b.left) * S / b.width, (e.clientY - b.top) * H / b.height];
+}
+
+// Pointer events for Hands mode & Dragging
+cv.addEventListener("pointerdown", e => {
+  const [px, py] = toCanvas(e);
+
+  // Add a rippling pulse after clicking anywhere (just the pulse, no drawn circle)
+  addRipple(px, py, 1.3, 460, 0.45, M["POSCA Tomato Red"], false);
+
+  if (hitHeader(px, py)) return;
+
+  const t = getCurrentT();
+  let found = -1;
+
+  if (inHandsMode) {
+    const checkOrder = [0, 1, 2, 3];
+    if (draggedTile !== null) {
+      checkOrder.splice(checkOrder.indexOf(draggedTile), 1);
+      checkOrder.push(draggedTile);
+    }
+    for (let i = checkOrder.length - 1; i >= 0; i--) {
+      const idx = checkOrder[i];
+      const pos = handsPositions[idx];
+      if (px >= pos.x && px <= pos.x + 364 && py >= pos.y && py <= pos.y + 364) {
+        found = idx;
+        break;
+      }
+    }
+  } else {
+    for (let idx = 3; idx >= 0; idx--) {
+      const st = getTileState(idx, t);
+      if (st.alpha >= 0.99 && px >= st.x && px <= st.x + 364 && py >= st.y && py <= st.y + 364) {
+        found = idx;
+        break;
+      }
+    }
+  }
+
+  if (found >= 0) {
+    pointerDownTile = found;
+    pointerDownPos = { x: px, y: py };
+    const curPos = inHandsMode ? handsPositions[found] : getTileState(found, t);
+    dragOffset = { x: px - curPos.x, y: py - curPos.y };
+    hasMoved = false;
+    cv.setPointerCapture(e.pointerId);
+  }
+});
+
+cv.addEventListener("pointermove", e => {
+  const [px, py] = toCanvas(e);
+
+  if (pointerDownTile !== null) {
+    const dist = Math.hypot(px - pointerDownPos.x, py - pointerDownPos.y);
+    if (!hasMoved && dist > 6) {
+      hasMoved = true;
+      if (!inHandsMode) {
+        inHandsMode = true;
+        for (let i = 0; i < 4; i++) {
+          handsPositions[i] = { x: HOME_SPOTS[i].x, y: HOME_SPOTS[i].y };
+          tileSnaps[i] = null;
+        }
+      }
+      draggedTile = pointerDownTile;
+    }
+
+    if (hasMoved && draggedTile !== null) {
+      // Keep the whole tile on the canvas so it never gets cut off
+      const EDGE = 10;
+      handsPositions[draggedTile].x = Math.min(S - 364 - EDGE, Math.max(EDGE, px - dragOffset.x));
+      handsPositions[draggedTile].y = Math.min(H - 364 - EDGE, Math.max(EDGE, py - dragOffset.y));
+      cv.style.cursor = "grabbing";
+      return;
+    }
+  }
+
+  if (hitHeader(px, py)) {
+    cv.style.cursor = "pointer";
+  } else {
+    const t = getCurrentT();
+    let overTile = false;
+    for (let idx = 3; idx >= 0; idx--) {
+      const pos = inHandsMode ? handsPositions[idx] : getTileState(idx, t);
+      const alpha = inHandsMode ? 1 : getTileState(idx, t).alpha;
+      if (alpha >= 0.99 && px >= pos.x && px <= pos.x + 364 && py >= pos.y && py <= pos.y + 364) {
+        overTile = true;
+        break;
+      }
+    }
+    cv.style.cursor = overTile ? "grab" : "default";
+  }
+});
+
+function handlePointerUpOrCancel(e) {
+  if (pointerDownTile !== null) {
+    if (hasMoved && draggedTile !== null) {
+      const curX = handsPositions[draggedTile].x;
+      const curY = handsPositions[draggedTile].y;
+
+      // Always snap back when dragged, with a pulse shockwave after landing
+      tileSnaps[draggedTile] = {
+        fromX: curX,
+        fromY: curY,
+        startTime: performance.now(),
+        duration: 220,
+        shockwaveTriggered: false
+      };
+    }
+    try { cv.releasePointerCapture(e.pointerId); } catch (_) {}
+    pointerDownTile = null;
+    draggedTile = null;
+    hasMoved = false;
+  }
+}
+
+cv.addEventListener("pointerup", handlePointerUpOrCancel);
+cv.addEventListener("pointercancel", handlePointerUpOrCancel);
+
+cv.addEventListener("click", e => {
+  const [px, py] = toCanvas(e);
+  if (hitHeader(px, py)) {
+    replay();
+  }
+});
+
+function frame(now) {
+  const nowP = paused ? pauseAt : now - pausedFor;
+  let t = timelineT(nowP);
+
+  const isStill = motionQuery.matches && !recording;
+  if (isStill) t = 6.8;
+
+  const nowMs = performance.now();
+
+  // Clean expired ripples
+  for (let i = activeRipples.length - 1; i >= 0; i--) {
+    if (nowMs - activeRipples[i].startTime > activeRipples[i].duration) {
+      activeRipples.splice(i, 1);
+    }
+  }
+  // Clean expired slam waves
+  for (let i = activeSlamWaves.length - 1; i >= 0; i--) {
+    if (nowMs - activeSlamWaves[i].startMs > activeSlamWaves[i].duration + 200) {
+      activeSlamWaves.splice(i, 1);
+    }
+  }
+
+  g.clearRect(0, 0, S, H);
+  if (recording) { g.fillStyle = paperPattern; g.fillRect(0, 0, S, H); }
+  g.save();
+  let shx = 0, shy = 0;
+  if (!isStill && !inHandsMode) {
+    const [ax, ay] = shake(t), [bx, by] = wallShake(t);
+    shx = ax + bx; shy = ay + by;
+    g.translate(shx, shy);
+  }
+
+  // Draw active ripple shockwave rings on plate ONLY if rip.drawRing is true
+  if (!isStill) {
+    for (let rIdx = 0; rIdx < activeRipples.length; rIdx++) {
+      const rip = activeRipples[rIdx];
+      if (!rip.drawRing) continue;
+      const dt = (nowMs - rip.startTime) / 1000;
+      if (dt <= 0) continue;
+      const rad = rip.speed * dt;
+      const prog = (nowMs - rip.startTime) / rip.duration;
+      if (prog >= 1) continue;
+      const fade = 1 - prog;
+
+      g.save();
+      g.strokeStyle = rip.color || M["POSCA Tomato Red"];
+      g.lineWidth = 3 * fade;
+      g.globalAlpha = 0.35 * fade;
+      g.beginPath();
+      g.arc(rip.x, rip.y, rad, 0, 2 * Math.PI);
+      g.stroke();
+      g.restore();
+    }
+
+    // Grand pulse ring as the wall scatters
+    if (!inHandsMode && t >= SCATTER && t <= SCATTER + 1.8) {
+      const endDt = t - SCATTER;
+      const endRadius = SCATTER_SPEED * endDt;
+      const endFade = Math.max(0, 1 - endDt / 1.8);
+      g.save();
+      g.strokeStyle = M["POSCA Tomato Red"];
+      g.lineWidth = 3.5 * endFade;
+      g.globalAlpha = 0.42 * endFade;
+      g.beginPath();
+      g.arc(600, 590, endRadius, 0, 2 * Math.PI);
+      g.stroke();
+      g.restore();
+    }
+  }
+
+  let status = "";
+  let statusElapsed = 0;
+  let statusAlpha = 1;
+  let pulseT = -1;
+  const litAlphas = [1, 0, 0, 0, 0];
+  let showUnderline = false;
+
+  if (inHandsMode && !recording) {
+    // Process tile snaps
+    const tileHome = [false, false, false, false];
+    const scales = [1, 1, 1, 1];
+
+    for (let i = 0; i < 4; i++) {
+      if (tileSnaps[i]) {
+        const elapsed = now - tileSnaps[i].startTime;
+        const dur = tileSnaps[i].duration || 220;
+        if (elapsed < dur) {
+          const u = elapsed / dur;
+          const e = u * u * u;
+          handsPositions[i].x = tileSnaps[i].fromX + (HOME_SPOTS[i].x - tileSnaps[i].fromX) * e;
+          handsPositions[i].y = tileSnaps[i].fromY + (HOME_SPOTS[i].y - tileSnaps[i].fromY) * e;
+          scales[i] = 1;
+        } else {
+          handsPositions[i].x = HOME_SPOTS[i].x;
+          handsPositions[i].y = HOME_SPOTS[i].y;
+
+          if (!tileSnaps[i].shockwaveTriggered) {
+            tileSnaps[i].shockwaveTriggered = true;
+            // Directional slam waves into adjacent neighbors that are home
+            if (i === 0) {
+              if (tileHome[1]) addSlamWave(1, "x", 1);
+              if (tileHome[3]) addSlamWave(3, "y", 1);
+            } else if (i === 1) {
+              if (tileHome[0]) addSlamWave(0, "x", -1);
+              if (tileHome[2]) addSlamWave(2, "y", 1);
+            } else if (i === 2) {
+              if (tileHome[1]) addSlamWave(1, "y", -1);
+              if (tileHome[3]) addSlamWave(3, "x", -1);
+            } else if (i === 3) {
+              if (tileHome[0]) addSlamWave(0, "y", -1);
+              if (tileHome[2]) addSlamWave(2, "x", 1);
+            }
+
+            // Pulse shockwave after landing (drawRing = false)
+            addRipple(HOME_SPOTS[i].x + 182, HOME_SPOTS[i].y + 182, 1.4, 460, 0.45, M["POSCA Tomato Red"], false);
+
+            let allAreHome = true;
+            for (let k = 0; k < 4; k++) {
+              if (handsPositions[k].x !== HOME_SPOTS[k].x || handsPositions[k].y !== HOME_SPOTS[k].y) {
+                allAreHome = false;
+                break;
+              }
+            }
+            if (allAreHome) {
+              addRipple(600, 590, 1.6, 420, 0.48, M["POSCA Tomato Red"], false);
+              handsPopStart = now;
+            }
+          }
+
+          if (elapsed < dur + 160) {
+            const clickU = (elapsed - dur) / 160;
+            scales[i] = 1 + 0.03 * (1 - clickU);
+            tileHome[i] = true;
+          } else {
+            scales[i] = 1;
+            tileSnaps[i] = null;
+            tileHome[i] = true;
+          }
+        }
+      } else {
+        const isH = handsPositions[i].x === HOME_SPOTS[i].x && handsPositions[i].y === HOME_SPOTS[i].y;
+        tileHome[i] = isH;
+      }
+    }
+
+    const allHome = tileHome[0] && tileHome[1] && tileHome[2] && tileHome[3];
+    for (let i = 0; i < 4; i++) {
+      litAlphas[i] = tileHome[i] ? 1 : 0;
+    }
+    litAlphas[4] = allHome ? 1 : 0;
+    showUnderline = allHome;
+
+    if (allHome) {
+      status = "a new flower";
+      statusElapsed = Math.max(0, (now - handsPopStart) / 1000);
+    } else {
+      status = "";
+    }
+
+    drawHeader(t, isStill, litAlphas, showUnderline);
+
+    if (status) {
+      const k = popScale(statusElapsed / 0.38);
+      g.save();
+      g.translate(S / 2, 158);
+      g.scale(k, k);
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.font = `700 34px ${FONT}`;
+      g.fillStyle = M["POSCA Tomato Red"];
+      g.fillText(status, 0, 0);
+      g.restore();
+    }
+
+    // Draw tiles in order, with draggedTile drawn last on top
+    const drawOrder = [0, 1, 2, 3];
+    if (draggedTile !== null) {
+      const dIdx = drawOrder.indexOf(draggedTile);
+      drawOrder.splice(dIdx, 1);
+      drawOrder.push(draggedTile);
+    }
+    for (const i of drawOrder) {
+      drawTile(i, handsPositions[i].x, handsPositions[i].y, 1, scales[i], t, pulseT, false, nowMs);
+    }
+
+  } else {
+    // Normal timeline mode
+    if (isStill) {
+      litAlphas[0] = 1; litAlphas[1] = 1; litAlphas[2] = 1; litAlphas[3] = 1; litAlphas[4] = 1;
+      showUnderline = true;
+      status = "a new flower";
+      statusElapsed = 1.0;
+    } else {
+      if (t >= 2.05 && t < SCATTER) litAlphas[1] = 1;
+      else if (t >= SCATTER && t < SCATTER + 1) litAlphas[1] = 1 - (t - SCATTER) / 1.0;
+
+      if (t >= 3.95 && t < SCATTER) litAlphas[2] = 1;
+      else if (t >= SCATTER && t < SCATTER + 1) litAlphas[2] = 1 - (t - SCATTER) / 1.0;
+
+      if (t >= 5.85 && t < SCATTER) litAlphas[3] = 1;
+      else if (t >= SCATTER && t < SCATTER + 1) litAlphas[3] = 1 - (t - SCATTER) / 1.0;
+
+      if (t >= 5.85 && t < SCATTER) litAlphas[4] = 1;
+      else if (t >= SCATTER && t < SCATTER + 1) litAlphas[4] = 1 - (t - SCATTER) / 1.0;
+
+      showUnderline = (t >= 5.85 && t < SCATTER);
+
+      statusAlpha = 1;
+
+      if (t >= 2.05 && t < 3.95) {
+        status = "two tiles";
+        statusElapsed = t - 2.05;
+      } else if (t >= 3.95 && t < 5.85) {
+        status = "three tiles";
+        statusElapsed = t - 3.95;
+      } else if (t >= 5.85 && t < RING_HITS[1]) {
+        status = "a new flower";
+        statusElapsed = t - 5.85;
+      } else if (t >= RING_HITS[1] && t < SCATTER + 1) {
+        status = "a wall of flowers";
+        statusElapsed = t - RING_HITS[1];
+        if (t >= SCATTER) statusAlpha = 1 - (t - SCATTER) / 1.0;
+      } else if (t >= 13.3) {
+        status = "one tile";
+        statusElapsed = t - 13.3;
+        if (t < 13.7) statusAlpha = (t - 13.3) / 0.4;
+      } else if (t < 2.05) {
+        status = "one tile";
+        statusElapsed = t + 1.0;
+      } else {
+        status = "";
+      }
+
+      if (t >= 6.0 && t <= 7.6) {
+        pulseT = t - 6.0;
+      }
+    }
+
+    drawHeader(t, isStill, litAlphas, showUnderline);
+
+    if (status && (isStill || statusAlpha > 0)) {
+      const k = isStill ? 1 : popScale(statusElapsed / 0.38);
+      g.save();
+      if (!isStill) g.globalAlpha = statusAlpha;
+      g.translate(S / 2, 158);
+      g.scale(k, k);
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.font = `700 34px ${FONT}`;
+      g.fillStyle = M["POSCA Tomato Red"];
+      g.fillText(status, 0, 0);
+      g.restore();
+    }
+
+    for (let i = 0; i < 4; i++) {
+      const st = getTileState(i, t);
+      let { x, y, scale } = st;
+      if (!isStill) {
+        const kn = knock(i, t);
+        x += kn.ox; y += kn.oy;
+        if (kn.sq) scale = [1 - kn.sq, 1 - kn.sq];
+      }
+      drawTile(i, x, y, st.alpha, scale, t, pulseT, isStill, nowMs);
+    }
+    if (!isStill) drawChips(t);
+    if (!isStill && t >= WALL_START && t < WALL_END) drawWall(t, nowMs, shx, shy);
+  }
+  g.restore();
+
+  if (status !== lastLive) {
+    lastLive = status;
+    live.textContent = status;
+  }
+
+  requestAnimationFrame(frame);
+}
+
+document.fonts.load(`700 66px "Gaegu"`).finally(() => requestAnimationFrame(frame));
+</script>
+</body>
+</html>
