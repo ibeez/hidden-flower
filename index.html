@@ -66,6 +66,7 @@
   aria-label="Fig. 05. Four square Talavera tiles drawn in chunky marker-coloured pixels. Each has a terracotta flower in the middle and a quarter of a second flower in every corner: a red quarter circle and cobalt drops. The tiles slide together one at a time, and where four corners meet, a whole new red and cobalt flower appears that no single tile has."></canvas>
 
 <div class="controls">
+  <button id="btn-sound" type="button">sound: off</button>
   <button class="sr" id="btn-restart" type="button">Start over</button>
   <button class="sr" id="btn-pause" type="button">Pause</button>
   <button class="sr" id="btn-record" type="button">Record one loop</button>
@@ -1032,6 +1033,160 @@ function drawHeader(t, isStill, litAlphas, showUnderline) {
   }
 }
 
+// ---------- sound: all synthesized, original, soft ----------
+// Recipes are in ../chiptune-music.md. Silent until the first touch.
+let ac = null, master, musicBus, sfxBus, noise, timer = null;
+let muted = false;
+const midi = m => 440 * Math.pow(2, (m - 69) / 12);
+const PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+const N = s => s === "-" ? null : 12 * (+s.slice(-1) + 1) + PC[s[0]] + (s[1] === "#" ? 1 : 0);
+// six bars, 100 BPM: 6 bars of 2.4 s is exactly the 14.4 second loop. D major, sunny.
+const MEL = [
+  "F#5 - A5 - B5 - A5 -", "F#5 - D5 - - - B4 -", "D5 - E5 - D5 - B4 -",
+  "E5 - - - A4 - - -", "B4 - D5 - E5 - F#5 -", "E5 - - - A4 - - -"
+].map(b => b.split(" ").map(N));
+// fingerpicked guitar: root, fifth, octave, third, walked through each bar
+const VOICINGS = [[50, 57, 62, 66], [47, 54, 59, 62], [43, 50, 55, 59], [45, 52, 57, 61], [43, 50, 55, 59], [45, 52, 57, 61]];
+const PICK = [0, 2, 1, 2, 3, 2, 1, 2];
+const BARS = MEL.length, STEPS = BARS * 8;
+const EIGHTH = 60 / 100 / 2;
+const LADDER = [0, 2, 4, 7, 9];
+const pent = i => 74 + 12 * Math.floor(i / 5) + LADDER[i % 5];   // D5 upward
+
+// the whole sound graph, built on whatever context `ac` is: live, or offline for the video
+function buildGraph() {
+  const comp = ac.createDynamicsCompressor();
+  comp.threshold.value = -16; comp.ratio.value = 5;
+  master = ac.createGain(); master.gain.value = muted ? 0 : 0.9;
+  master.connect(comp); comp.connect(ac.destination);
+  musicBus = ac.createGain(); musicBus.gain.value = 0.5; musicBus.connect(master);
+  // a warm courtyard: medium room, tiles and plaster
+  const verb = ac.createConvolver(), wet = ac.createGain();
+  const len = ac.sampleRate * 2.2, ir = ac.createBuffer(2, len, ac.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+  }
+  verb.buffer = ir; wet.gain.value = 0.35;
+  musicBus.connect(verb); verb.connect(wet); wet.connect(master);
+  sfxBus = ac.createGain(); sfxBus.gain.value = 0.9; sfxBus.connect(master);
+  sfxBus.connect(verb);
+  noise = ac.createBuffer(1, ac.sampleRate * 0.8, ac.sampleRate);
+  const d = noise.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+}
+
+function audioInit() {
+  if (ac) { ac.resume(); return; }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  ac = new AC();
+  buildGraph();
+  // the button says off until the first touch actually starts the sound
+  if (!muted) document.getElementById("btn-sound").textContent = "sound: on";
+  let stepI = 0, next = ac.currentTime + 0.12;
+  timer = setInterval(() => {
+    while (next < ac.currentTime + 0.12) { music(stepI, next); stepI = (stepI + 1) % STEPS; next += EIGHTH; }
+  }, 25);
+}
+
+function tone(bus, wave, f, t, dur, vol, glide) {
+  const o = ac.createOscillator(), e = ac.createGain();
+  o.type = wave;
+  o.frequency.setValueAtTime(f, t);
+  if (glide) o.frequency.exponentialRampToValueAtTime(glide, t + dur * 0.6);
+  e.gain.setValueAtTime(0.0001, t);
+  e.gain.exponentialRampToValueAtTime(vol, t + 0.004);
+  e.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(e); e.connect(bus);
+  o.start(t); o.stop(t + dur + 0.05);
+}
+// a nylon string: bright at the pluck, then the filter closes and it goes warm and round
+function pluck(bus, f, t, vol, dur = 1.1) {
+  const o1 = ac.createOscillator(), o2 = ac.createOscillator(), lp = ac.createBiquadFilter(), e = ac.createGain(), m2 = ac.createGain();
+  o1.type = "triangle"; o2.type = "sawtooth";
+  o1.frequency.value = f; o2.frequency.value = f; o2.detune.value = 4;
+  m2.gain.value = 0.18;
+  lp.type = "lowpass"; lp.Q.value = 0.7;
+  lp.frequency.setValueAtTime(Math.min(9000, f * 9), t);
+  lp.frequency.exponentialRampToValueAtTime(Math.max(200, f * 1.4), t + 0.35);
+  e.gain.setValueAtTime(0.0001, t);
+  e.gain.exponentialRampToValueAtTime(vol, t + 0.003);
+  e.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o1.connect(lp); o2.connect(m2); m2.connect(lp); lp.connect(e); e.connect(bus);
+  for (const o of [o1, o2]) { o.start(t); o.stop(t + dur + 0.05); }
+}
+function music(i, t) {
+  const bar = i >> 3, s = i & 7;
+  const v = VOICINGS[bar];
+  pluck(musicBus, midi(v[PICK[s]]), t, s === 0 ? 0.13 : 0.08);
+  const m = MEL[bar][s];
+  if (m) pluck(musicBus, midi(m), t + 0.012, 0.1, 1.4);
+  // thump-thump: a soft low heartbeat at the top of each bar
+  if (s === 0 || s === 1) tone(musicBus, "sine", midi(v[0] - 12), t, 0.35, s === 0 ? 0.2 : 0.11, midi(v[0] - 12) * 0.8);
+}
+function duck(t) {
+  musicBus.gain.cancelScheduledValues(t);
+  musicBus.gain.setTargetAtTime(0.22, t, 0.02);
+  musicBus.gain.setTargetAtTime(0.5, t + 0.25, 0.15);
+}
+function noiseHit(t, f, q, dur, vol, f1) {
+  const s = ac.createBufferSource(), bp = ac.createBiquadFilter(), e = ac.createGain();
+  s.buffer = noise;
+  bp.type = "bandpass"; bp.Q.value = q;
+  bp.frequency.setValueAtTime(f, t);
+  if (f1) bp.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  e.gain.setValueAtTime(0.0001, t);
+  e.gain.exponentialRampToValueAtTime(vol, t + (f1 ? dur * 0.4 : 0.003));
+  e.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(bp); bp.connect(e); e.connect(sfxBus);
+  s.start(t); s.stop(t + dur + 0.05);
+}
+// ceramic clack: a click of grit, two glassy partials that don't line up (that's what makes it sound like a tile), and a body thud
+function clack(t, size) {
+  noiseHit(t, 3200, 1.6, 0.05, 0.12 + 0.06 * size);
+  tone(sfxBus, "sine", 2350, t, 0.16, 0.06);
+  tone(sfxBus, "sine", 3710, t, 0.1, 0.035);
+  tone(sfxBus, "triangle", 150 - 25 * size, t, 0.14 + 0.06 * size, 0.18 + 0.1 * size, 60);
+}
+// harp sparkle: quick plucks running up the scale
+function sparkle(t, n, gap, from) {
+  for (let k = 0; k < n; k++) pluck(sfxBus, midi(pent(from + k)), t + k * gap, 0.07, 1.2);
+}
+function sfx(kind, arg, at) {
+  if (!ac || muted) return;
+  const t = at ?? ac.currentTime + 0.005;
+  if (kind === "clack") { clack(t, arg); duck(t); }
+  else if (kind === "bloom") sparkle(t, 5, 0.06, 0);
+  else if (kind === "wall") { sparkle(t, 10, 0.07, 0); sparkle(t + 0.035, 10, 0.07, 2); }
+  else if (kind === "whoosh") noiseHit(t, 400, 1.2, 0.7, 0.07, 2400);
+  else if (kind === "tock") {
+    // a softer wooden tock for a tile landing back home by hand
+    tone(sfxBus, "sine", 820, t, 0.09, 0.14, 560);
+    noiseHit(t, 1800, 2, 0.03, 0.05);
+  }
+}
+
+// the timeline's sounds, at the exact moments the picture hits them
+const CUES = [
+  [2.05, "clack", 0.3], [3.95, "clack", 0.3], [5.85, "clack", 0.7], [5.95, "bloom"],
+  [8.55, "clack", 0.6], [9.65, "clack", 1], [9.9, "wall"], [10.8, "whoosh"], [13.7, "tock"],
+];
+let cueT = 0;
+function listenTimeline(t) {
+  if (t < cueT) cueT = -1;
+  for (const [ct, k, x] of CUES) if (cueT < ct && ct <= t) sfx(k, x);
+  cueT = t;
+}
+
+const btnSound = document.getElementById("btn-sound");
+btnSound.onclick = () => {
+  if (!ac) { audioInit(); return; }
+  muted = !muted;
+  master.gain.setTargetAtTime(muted ? 0 : 0.9, ac.currentTime, 0.03);
+  btnSound.textContent = muted ? "sound: off" : "sound: on";
+};
+
 function toCanvas(e) {
   const b = cv.getBoundingClientRect();
   return [(e.clientX - b.left) * S / b.width, (e.clientY - b.top) * H / b.height];
@@ -1039,6 +1194,7 @@ function toCanvas(e) {
 
 // Pointer events for Hands mode & Dragging
 cv.addEventListener("pointerdown", e => {
+  audioInit();
   const [px, py] = toCanvas(e);
 
   // Add a rippling pulse after clicking anywhere (just the pulse, no drawn circle)
@@ -1257,6 +1413,7 @@ function frame(now) {
 
           if (!tileSnaps[i].shockwaveTriggered) {
             tileSnaps[i].shockwaveTriggered = true;
+            sfx("tock");
             // Directional slam waves into adjacent neighbors that are home
             if (i === 0) {
               if (tileHome[1]) addSlamWave(1, "x", 1);
@@ -1285,6 +1442,7 @@ function frame(now) {
             if (allAreHome) {
               addRipple(600, 590, 1.6, 420, 0.48, M["POSCA Tomato Red"], false);
               handsPopStart = now;
+              sfx("bloom", 0, ac && ac.currentTime + 0.08);
             }
           }
 
@@ -1346,6 +1504,7 @@ function frame(now) {
 
   } else {
     // Normal timeline mode
+    if (!isStill && !paused) listenTimeline(t);
     if (isStill) {
       litAlphas[0] = 1; litAlphas[1] = 1; litAlphas[2] = 1; litAlphas[3] = 1; litAlphas[4] = 1;
       showUnderline = true;
